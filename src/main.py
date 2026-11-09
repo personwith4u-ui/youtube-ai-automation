@@ -1,6 +1,6 @@
 import os
-import re
 import json
+import re
 import asyncio
 import subprocess
 import requests
@@ -11,87 +11,78 @@ from PIL import Image, ImageDraw
 OUT = Path("output")
 OUT.mkdir(exist_ok=True)
 
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-PEXELS_KEY = os.getenv("PEXELS_API_KEY")
-
 def make_script():
+    key = os.environ["GEMINI_API_KEY"]
     url = (
         "https://generativelanguage.googleapis.com/v1beta/"
-        "models/gemini-2.0-flash:generateContent?key=" + GEMINI_KEY
+        "models/gemini-2.5-flash:generateContent?key=" + key
     )
     prompt = """
-    Write an original interesting Hindi YouTube video script.
-    Topic: Interesting facts about space.
-    Give a catchy title and 6 short narration paragraphs.
+    Write an original Hindi YouTube script about space facts.
+    Give 6 interesting narration paragraphs.
     Return JSON only: {"title":"...", "scenes":["...", "..."]}
     """
     r = requests.post(url, json={
         "contents": [{"parts": [{"text": prompt}]}]
     }, timeout=60)
     r.raise_for_status()
-    text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-    text = re.sub(r"```json|```", "", text).strip()
-    return json.loads(text)
+    data = r.json()
+    result = data["candidates"][0]["content"]["parts"][0]["text"]
+    result = re.sub(r"```json|```", "", result).strip()
+    return json.loads(result)
 
-def get_images(query):
-    headers = {"Authorization": PEXELS_KEY}
-    r = requests.get(
-        "https://api.pexels.com/v1/search",
-        headers=headers,
-        params={"query": query, "per_page": 6},
-        timeout=30
-    )
-    r.raise_for_status()
-    photos = r.json()["photos"]
-    if not photos:
-        raise RuntimeError("Pexels par images nahi mili.")
-    paths = []
-    for i, photo in enumerate(photos):
-        data = requests.get(photo["src"]["large"], timeout=30)
-        data.raise_for_status()
-        path = OUT / f"image_{i}.jpg"
-        path.write_bytes(data.content)
-        paths.append(path)
-    return paths
+def make_background():
+    img = Image.new("RGB", (1280, 720), (12, 18, 55))
+    draw = ImageDraw.Draw(img)
+
+    for x, y, radius in [
+        (200, 180, 100), (1000, 500, 160),
+        (650, 300, 70), (900, 100, 35)
+    ]:
+        draw.ellipse(
+            (x-radius, y-radius, x+radius, y+radius),
+            fill=(35, 55, 125)
+        )
+
+    for x, y in [(100,100),(400,500),(700,100),
+                 (1100,250),(500,650),(850,600)]:
+        draw.ellipse((x,y,x+5,y+5), fill="white")
+
+    img.save(OUT / "background.jpg")
 
 async def make_voice(text):
     voice = edge_tts.Communicate(
-        text, "hi-IN-MadhurNeural", rate="+0%"
+        text, "hi-IN-MadhurNeural"
     )
     await voice.save(str(OUT / "voice.mp3"))
 
-def make_video(images):
-    for i, path in enumerate(images):
-        img = Image.open(path).convert("RGB")
-        img = img.resize((1280, 720))
-        img.save(OUT / f"frame_{i:03}.jpg")
-
-    audio = OUT / "voice.mp3"
-    frames = OUT / "frame_%03d.jpg"
-    video = OUT / "video.mp4"
-
+def make_video():
     subprocess.run([
-        "ffmpeg", "-y", "-framerate", "1",
-        "-i", str(frames), "-i", str(audio),
-        "-vf", "format=yuv420p",
-        "-c:v", "libx264", "-c:a", "aac",
-        "-shortest", str(video)
+        "ffmpeg", "-y",
+        "-loop", "1",
+        "-i", str(OUT / "background.jpg"),
+        "-i", str(OUT / "voice.mp3"),
+        "-c:v", "libx264",
+        "-tune", "stillimage",
+        "-c:a", "aac",
+        "-pix_fmt", "yuv420p",
+        "-shortest",
+        str(OUT / "video.mp4")
     ], check=True)
 
 def main():
-    if not GEMINI_KEY or not PEXELS_KEY:
-        raise RuntimeError("API keys GitHub Secrets mein add karo.")
-
     data = make_script()
     narration = " ".join(data["scenes"])
+
     (OUT / "script.txt").write_text(
         data["title"] + "\n\n" + narration,
         encoding="utf-8"
     )
 
-    images = get_images("space planets galaxy")
+    make_background()
     asyncio.run(make_voice(narration))
-    make_video(images)
+    make_video()
+
     print("Video ready:", OUT / "video.mp4")
 
 if __name__ == "__main__":
